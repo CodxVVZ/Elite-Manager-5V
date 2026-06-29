@@ -7,6 +7,7 @@ import {
   simulateMatch,
   defaultTactics,
   TacticalSettings,
+  getAITacticsForTeam,
 } from "@/lib/matchEngine";
 import { POS_LABELS, getPositionDistance } from "@/lib/positionUtils";
 import { sortStandings } from "@/lib/leagueSystem";
@@ -20,6 +21,7 @@ import { useTransfer } from "@/contexts/TransferContext";
 import { getSeasonStartDate } from "@/lib/calendar";
 
 import { useFullscreen } from "@/hooks/useFullscreen";
+import { getTeamStaticInfo } from "@/lib/teamInfo";
 
 type Tab =
   | "dashboard"
@@ -1261,6 +1263,7 @@ export default function Game() {
   const { advanceTransferDay } = useTransfer();
   const {
     selectedTeam,
+    coachProfile,
     playerStates,
     tactics,
     setTactics,
@@ -1336,6 +1339,13 @@ export default function Game() {
   const [lineupMode, setLineupMode] = useState<"auto" | "manual">("auto");
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null);
   const [showTeamModal, setShowTeamModal] = useState<Team | null>(null);
+  const [teamModalTab, setTeamModalTab] = useState<"info" | "trophies">("info");
+
+  useEffect(() => {
+    if (showTeamModal) {
+      setTeamModalTab("info");
+    }
+  }, [showTeamModal]);
   const [showContractModal, setShowContractModal] = useState<any>(null);
   const [contractSalary, setContractSalary] = useState(0);
   const [contractYears, setContractYears] = useState(2);
@@ -1619,14 +1629,50 @@ export default function Game() {
     nextOpponent.players.forEach((p) => {
       oppFat[p.id] = 100;
     });
-    const aiT = { ...defaultTactics };
-    const r = Math.random();
-    aiT.mentality = r < 0.4 ? "attacking" : r < 0.7 ? "balanced" : "defensive";
+    const aiT = getAITacticsForTeam(nextOpponent);
+
+    let boostedSelectedTeam = selectedTeam;
+    if (coachProfile?.tacticalStyle) {
+      boostedSelectedTeam = {
+        ...selectedTeam,
+        players: selectedTeam.players.map(p => {
+          let shooting = p.shooting;
+          let passing = p.passing;
+          let dribbling = p.dribbling;
+          let defense = p.defense;
+          let physical = p.physical;
+          let pace = p.pace;
+          
+          if (coachProfile.tacticalStyle === 'tiki_taka') {
+            passing = Math.min(99, passing + 4);
+            dribbling = Math.min(99, dribbling + 4);
+          } else if (coachProfile.tacticalStyle === 'gegenpressing') {
+            pace = Math.min(99, pace + 4);
+            physical = Math.min(99, physical + 4);
+          } else if (coachProfile.tacticalStyle === 'park_the_bus') {
+            defense = Math.min(99, defense + 4);
+          } else if (coachProfile.tacticalStyle === 'offensive') {
+            shooting = Math.min(99, shooting + 4);
+            pace = Math.min(99, pace + 4);
+          }
+          
+          return {
+            ...p,
+            shooting,
+            passing,
+            dribbling,
+            defense,
+            physical,
+            pace
+          };
+        })
+      };
+    }
 
     let result;
     if (todayMatch.homeId === selectedTeam.id) {
       result = simulateMatch(
-        selectedTeam,
+        boostedSelectedTeam,
         nextOpponent,
         myFat,
         oppFat,
@@ -1636,7 +1682,7 @@ export default function Game() {
     } else {
       result = simulateMatch(
         nextOpponent,
-        selectedTeam,
+        boostedSelectedTeam,
         oppFat,
         myFat,
         aiT,
@@ -2092,71 +2138,136 @@ export default function Game() {
       )}
 
       {/* MODAL VITRINE DE TÍTULOS / DETALHES DO TIME */}
-      {showTeamModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-          <div
-            className={`w-full max-w-sm rounded-2xl border p-5 ${dark ? "bg-gray-900 border-gray-700" : "bg-white border-gray-200"} max-h-[80vh] overflow-y-auto`}
-          >
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10">
-                  <TeamLogo
-                    teamId={showTeamModal.id}
-                    logoUrl={showTeamModal.logoUrl}
-                    fallbackName={showTeamModal.name}
-                  />
+      {showTeamModal && (() => {
+        const staticInfo = getTeamStaticInfo(showTeamModal, showTeamModal.id === selectedTeam?.id ? coachProfile?.name : undefined);
+        return (
+          <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+            <div
+              className={`w-full max-w-sm rounded-2xl border p-5 ${dark ? "bg-gray-900 border-gray-700" : "bg-white border-gray-200"} max-h-[80vh] overflow-y-auto`}
+            >
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10">
+                    <TeamLogo
+                      teamId={showTeamModal.id}
+                      logoUrl={showTeamModal.logoUrl}
+                      fallbackName={showTeamModal.name}
+                    />
+                  </div>
+                  <div>
+                    <h3 className={`font-bold text-lg leading-tight ${tx}`}>
+                      {showTeamModal.name}
+                    </h3>
+                    <p className={`text-xs ${sub}`}>{showTeamModal.city}</p>
+                  </div>
                 </div>
-                <div>
-                  <h3 className={`font-bold text-lg leading-tight ${tx}`}>
-                    {showTeamModal.name}
-                  </h3>
-                  <p className={`text-xs ${sub}`}>{showTeamModal.city}</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setShowTeamModal(null)}
-                className={`text-xl ${sub} hover:${tx}`}
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className={`mt-4 pt-4 border-t ${div}`}>
-              <h4
-                className={`text-sm font-bold mb-3 flex items-center gap-2 ${tx}`}
-              >
-                🏆 Vitrine de Títulos
-              </h4>
-              {clubTrophies[showTeamModal.id] &&
-              clubTrophies[showTeamModal.id].length > 0 ? (
-                <div className="space-y-2">
-                  {clubTrophies[showTeamModal.id].map((t, idx) => (
-                    <div
-                      key={idx}
-                      className={`flex items-center justify-between p-2 rounded-lg border ${dark ? "bg-gray-800 border-gray-700" : "bg-gray-50 border-gray-100"}`}
-                    >
-                      <span className={`text-xs font-semibold ${tx}`}>
-                        {t.name}
-                      </span>
-                      <span
-                        className={`text-xs ${sub} font-mono bg-gray-500/10 px-2 py-0.5 rounded`}
-                      >
-                        {t.season}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div
-                  className={`text-center py-6 border border-dashed rounded-lg ${dark ? "border-gray-700 text-gray-500" : "border-gray-300 text-gray-400"}`}
+                <button
+                  onClick={() => setShowTeamModal(null)}
+                  className={`text-xl ${sub} hover:${tx}`}
                 >
-                  <p className="text-xs">Nenhum título ganho durante o save.</p>
+                  ✕
+                </button>
+              </div>
+
+              {/* Abas do Modal */}
+              <div className={`flex border-b ${div} mb-4`}>
+                <button
+                  onClick={() => setTeamModalTab("info")}
+                  className={`flex-1 pb-2 text-xs font-bold text-center border-b-2 transition-colors ${teamModalTab === "info" ? (dark ? "border-green-400 text-green-400" : "border-green-600 text-green-600") : "border-transparent text-gray-400 hover:text-gray-300"}`}
+                >
+                  ℹ️ Informações
+                </button>
+                <button
+                  onClick={() => setTeamModalTab("trophies")}
+                  className={`flex-1 pb-2 text-xs font-bold text-center border-b-2 transition-colors ${teamModalTab === "trophies" ? (dark ? "border-green-400 text-green-400" : "border-green-600 text-green-600") : "border-transparent text-gray-400 hover:text-gray-300"}`}
+                >
+                  🏆 Vitrine ({clubTrophies?.[showTeamModal.id]?.length || 0})
+                </button>
+              </div>
+
+              {teamModalTab === "info" && (
+                <div className="space-y-3">
+                  <div className={`p-3 rounded-xl border ${dark ? "bg-gray-800/40 border-gray-700" : "bg-gray-50 border-gray-100"}`}>
+                    <p className={`text-[10px] font-bold uppercase tracking-wider ${sub}`}>🏟️ Estádio</p>
+                    <p className={`text-sm font-semibold mt-0.5 ${tx}`}>{staticInfo.stadiumName}</p>
+                    <p className={`text-xs ${sub} mt-0.5`}>Capacidade: <span className="font-mono font-medium">{staticInfo.stadiumCapacity.toLocaleString("pt-BR")}</span></p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className={`p-3 rounded-xl border ${dark ? "bg-gray-800/40 border-gray-700" : "bg-gray-50 border-gray-100"}`}>
+                      <p className={`text-[10px] font-bold uppercase tracking-wider ${sub}`}>👔 Técnico</p>
+                      <p className={`text-xs font-semibold mt-0.5 truncate ${tx}`} title={staticInfo.coachName}>{staticInfo.coachName}</p>
+                    </div>
+                    <div className={`p-3 rounded-xl border ${dark ? "bg-gray-800/40 border-gray-700" : "bg-gray-50 border-gray-100"}`}>
+                      <p className={`text-[10px] font-bold uppercase tracking-wider ${sub}`}>📋 Esquema</p>
+                      <p className={`text-xs font-mono font-semibold mt-0.5 ${tx}`}>{staticInfo.formation}</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className={`p-3 rounded-xl border ${dark ? "bg-gray-800/40 border-gray-700" : "bg-gray-50 border-gray-100"}`}>
+                      <p className={`text-[10px] font-bold uppercase tracking-wider ${sub}`}>🛡️ Apelido</p>
+                      <p className={`text-xs font-semibold mt-0.5 truncate ${tx}`} title={staticInfo.nickname}>{staticInfo.nickname}</p>
+                    </div>
+                    <div className={`p-3 rounded-xl border ${dark ? "bg-gray-800/40 border-gray-700" : "bg-gray-50 border-gray-100"}`}>
+                      <p className={`text-[10px] font-bold uppercase tracking-wider ${sub}`}>📅 Fundação</p>
+                      <p className={`text-xs font-semibold mt-0.5 ${tx}`}>{staticInfo.founded}</p>
+                    </div>
+                  </div>
+
+                  <div className={`p-3 rounded-xl border ${dark ? "bg-gray-800/40 border-gray-700" : "bg-gray-50 border-gray-100"}`}>
+                    <p className={`text-[10px] font-bold uppercase tracking-wider ${sub}`}>🔥 Maior Rival</p>
+                    <p className={`text-xs font-semibold mt-0.5 ${tx}`}>{staticInfo.rival}</p>
+                  </div>
+
+                  <div className={`p-3 rounded-xl border ${dark ? "bg-gray-800/40 border-gray-700" : "bg-gray-50 border-gray-100"}`}>
+                    <p className={`text-[10px] font-bold uppercase tracking-wider ${sub}`}>💰 Finanças</p>
+                    <div className="flex justify-between mt-1 text-xs">
+                      <span className={sub}>Saldo:</span>
+                      <span className="font-mono font-bold text-emerald-500">€{(showTeamModal.balance / 1000000).toFixed(1)}M</span>
+                    </div>
+                    <div className="flex justify-between mt-0.5 text-xs">
+                      <span className={sub}>Faturamento:</span>
+                      <span className="font-mono font-bold text-emerald-500">€{(showTeamModal.monthlyIncome / 1000).toFixed(0)}k/mês</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {teamModalTab === "trophies" && (
+                <div className="space-y-2">
+                  {clubTrophies?.[showTeamModal.id] &&
+                  clubTrophies[showTeamModal.id].length > 0 ? (
+                    <div className="space-y-2">
+                      {clubTrophies[showTeamModal.id].map((t, idx) => (
+                        <div
+                          key={idx}
+                          className={`flex items-center justify-between p-2 rounded-lg border ${dark ? "bg-gray-800 border-gray-700" : "bg-gray-50 border-gray-100"}`}
+                        >
+                          <span className={`text-xs font-semibold ${tx}`}>
+                            {t.name}
+                          </span>
+                          <span
+                            className={`text-xs ${sub} font-mono bg-gray-500/10 px-2 py-0.5 rounded`}
+                          >
+                            {t.season}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div
+                      className={`text-center py-6 border border-dashed rounded-lg ${dark ? "border-gray-700 text-gray-500" : "border-gray-300 text-gray-400"}`}
+                    >
+                      <p className="text-xs">Nenhum título ganho durante o save.</p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       <div className={`min-h-screen flex flex-col ${bg}`}>
         {/* TOP BAR */}
@@ -2171,20 +2282,29 @@ export default function Game() {
               >
                 ← Menu
               </button>
-              <div className="w-8 h-8 flex-shrink-0">
-                <TeamLogo
-                  teamId={selectedTeam.id}
-                  logoUrl={selectedTeam.logoUrl}
-                  fallbackName={selectedTeam.name}
-                />
-              </div>
-              <div>
-                <p className={`font-bold text-sm leading-tight ${tx}`}>
-                  {selectedTeam.abbreviation}
-                </p>
-                <p className={`text-xs ${sub}`}>
-                  {currentDayName} {currentDateStr} · {season}
-                </p>
+              <div
+                onClick={() => {
+                  setTeamModalTab("info");
+                  setShowTeamModal(selectedTeam);
+                }}
+                className="flex items-center gap-2 cursor-pointer hover:opacity-85 transition-opacity"
+                title="Ver detalhes do seu clube"
+              >
+                <div className="w-8 h-8 flex-shrink-0">
+                  <TeamLogo
+                    teamId={selectedTeam.id}
+                    logoUrl={selectedTeam.logoUrl}
+                    fallbackName={selectedTeam.name}
+                  />
+                </div>
+                <div>
+                  <p className={`font-bold text-sm leading-tight ${tx}`}>
+                    {selectedTeam.abbreviation}
+                  </p>
+                  <p className={`text-xs ${sub}`}>
+                    {currentDayName} {currentDateStr} · {season}
+                  </p>
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -2501,6 +2621,52 @@ export default function Game() {
                         </>
                       )}
                     </div>
+
+                    {/* CARD PERFIL DO TREINADOR */}
+                    {coachProfile && (
+                      <div className={`rounded-xl border p-4 ${card} relative overflow-hidden`}>
+                        <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-500/5 rounded-full -mr-6 -mt-6"></div>
+                        
+                        <div className="flex items-center gap-3 border-b pb-3 mb-3 dark:border-gray-800 border-slate-100">
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${dark ? "bg-indigo-950 text-indigo-300 border border-indigo-800" : "bg-indigo-50 text-indigo-600 border border-indigo-100"}`}>
+                            👔
+                          </div>
+                          <div>
+                            <h3 className={`text-sm font-black tracking-tight ${tx}`}>{coachProfile.name}</h3>
+                            <p className={`text-[10px] uppercase font-bold tracking-wider ${sub}`}>
+                              {coachProfile.nationality} · {coachProfile.age} anos · {coachProfile.favoriteFormation}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3 text-xs">
+                          <div className={`p-2.5 rounded-lg border ${dark ? "bg-gray-800/20 border-gray-800" : "bg-slate-50 border-slate-100"}`}>
+                            <span className="text-[10px] uppercase font-extrabold tracking-wider text-indigo-500 block mb-0.5">Filosofia</span>
+                            <span className={`font-bold ${tx}`}>
+                              {coachProfile.tacticalStyle === 'offensive' ? "Ataque Total" :
+                               coachProfile.tacticalStyle === 'tiki_taka' ? "Tiki-Taka" :
+                               coachProfile.tacticalStyle === 'gegenpressing' ? "Gegenpressing" : "Ferrolho Defensivo"}
+                            </span>
+                          </div>
+
+                          <div className={`p-2.5 rounded-lg border ${dark ? "bg-gray-800/20 border-gray-800" : "bg-slate-50 border-slate-100"}`}>
+                            <span className="text-[10px] uppercase font-extrabold tracking-wider text-emerald-500 block mb-0.5">Especialidade</span>
+                            <span className={`font-bold ${tx}`}>
+                              {coachProfile.background === 'pro_license' ? "Licença Pro" :
+                               coachProfile.background === 'ex_player' ? "Ex-Jogador" :
+                               coachProfile.background === 'phys_ed' ? "Cientista Esporte" : "Negociador"}
+                            </span>
+                          </div>
+                        </div>
+                        
+                        <p className={`text-[10px] mt-2 italic leading-normal ${sub}`}>
+                          💡 {coachProfile.background === 'pro_license' ? "Efeito ativo: +5 de Moral inicial para o elenco." :
+                              coachProfile.background === 'ex_player' ? "Efeito ativo: +30% de bônus de Moral nas partidas do elenco." :
+                              coachProfile.background === 'phys_ed' ? "Efeito ativo: +20% de eficiência de recuperação física diária." :
+                              "Efeito ativo: Propostas de contrato com menores exigências salariais e +15% de verbas."}
+                        </p>
+                      </div>
+                    )}
 
                     {/* Próximos jogos */}
                     <div className={`rounded-xl border ${card}`}>

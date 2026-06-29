@@ -47,3 +47,13 @@ export interface League {
   country: string;
   teams: Team[];
 }
+
+export interface CoachProfile {
+  name: string;
+  nationality: string;
+  age: number;
+  tacticalStyle: 'tiki_taka' | 'gegenpressing' | 'park_the_bus' | 'offensive';
+  favoriteFormation: string;
+  background: 'pro_license' | 'ex_player' | 'phys_ed' | 'negotiator';
+}
+

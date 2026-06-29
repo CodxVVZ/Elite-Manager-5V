@@ -9,11 +9,13 @@ import {
   useRef,
 } from "react";
 import { Team, Player, teams as allTeams, LEAGUES } from "@/lib/teams";
+import { CoachProfile } from "@/src/types";
 import { analyzeSquad } from "@/lib/squadAnalyzer";
 import {
   TacticalSettings,
   defaultTactics,
   simulateMatch,
+  getAITacticsForTeam,
 } from "@/lib/matchEngine";
 import {
   StandingRow,
@@ -43,6 +45,7 @@ import {
 import { UCLFixture, UCLStandingRow, selectUCLTeams, createUCLPots, drawUCLFixtures, generateUCLCalendarMatches, buildUCLStandings, getUCLClassification, generateUCLKnockout } from "@/lib/championsLeague";
 import type { Facilities, StaffMember } from "@/lib/saveSystem";
 import { IndividualPlan } from "@/lib/trainingTypes";
+import { getTeamStaticInfo } from "@/lib/teamInfo";
 
 
 // ─── TIPOS ────────────────────────────────────────────────────────────────────
@@ -102,6 +105,8 @@ interface GameContextType {
   // Time
   selectedTeam: Team | null;
   setSelectedTeam: (team: Team) => void;
+  coachProfile: CoachProfile | null;
+  setCoachProfile: (profile: CoachProfile | null) => void;
   playerStates: Record<number, PlayerState>;
   applyFatigueDrops: (
     drops: Record<number, number>,
@@ -223,6 +228,7 @@ const GameContext = createContext<GameContextType | undefined>(undefined);
 
 export function GameProvider({ children }: { children: ReactNode }) {
   const [selectedTeam, setSelectedTeamRaw] = useState<Team | null>(null);
+  const [coachProfile, setCoachProfile] = useState<CoachProfile | null>(null);
   const [playerStates, setPlayerStates] = useState<Record<number, PlayerState>>(
     {},
   );
@@ -678,13 +684,15 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const setSelectedTeam = useCallback(
     (team: Team) => {
       setSelectedTeamRaw(team);
-      setBalance(team.balance);
+      const startBalance = coachProfile?.background === 'negotiator' ? Math.round(team.balance * 1.15) : team.balance;
+      setBalance(startBalance);
       setMonthlyIncome(team.monthlyIncome);
       const initial: Record<number, PlayerState> = {};
+      const isProLicense = coachProfile?.background === 'pro_license';
       team.players.forEach((p: Player) => {
         initial[p.id] = {
           fatigue: 100,
-          morale: p.morale,
+          morale: isProLicense ? Math.min(100, p.morale + 5) : p.morale,
           happiness: p.happiness,
           injuryWeeks: 0,
         };
@@ -742,7 +750,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         },
       ]);
     },
-    [initStandings, initSchedule, initCup],
+    [initStandings, initSchedule, initCup, coachProfile],
   );
 
   const addFunds = useCallback((v: number) => setBalance((b) => b + v), []);
@@ -851,8 +859,11 @@ export function GameProvider({ children }: { children: ReactNode }) {
               if (st.role === "coach" || st.role === "assistant")
                 coachSkill += st.skill;
             });
-            const tcMod =
+            let tcMod =
               (facilities.trainingCenter - 1) * 0.15 + coachSkill * 0.015;
+            if (coachProfile?.background === 'phys_ed') {
+              tcMod += 0.20;
+            }
             if (fatChange > 0) {
               fatChange = Math.round(fatChange * (1 + tcMod));
             } else if (fatChange < 0) {
@@ -961,14 +972,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
           const hTeam = allTeams.find((t) => t.id === m.homeId);
           const aTeam = allTeams.find((t) => t.id === m.awayId);
           if (hTeam && aTeam) {
-            const aiH = { ...defaultTactics },
-              aiA = { ...defaultTactics };
-            const r1 = Math.random();
-            aiH.mentality =
-              r1 < 0.4 ? "attacking" : r1 < 0.7 ? "balanced" : "defensive";
-            const r2 = Math.random();
-            aiA.mentality =
-              r2 < 0.4 ? "attacking" : r2 < 0.7 ? "balanced" : "defensive";
+            const aiH = getAITacticsForTeam(hTeam);
+            const aiA = getAITacticsForTeam(aTeam);
             const hFat: Record<number, number> = {},
               aFat: Record<number, number> = {};
             hTeam.players.forEach((p) => {
@@ -1071,6 +1076,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       myStaff,
       calendarMatches,
       allTeams,
+      coachProfile,
     ],
   );
 
@@ -1136,7 +1142,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
     (drops: Record<number, number>, isWin: boolean, isDraw: boolean) => {
       setPlayerStates((prev) => {
         const next = { ...prev };
-        const moraleDelta = isWin ? 6 : isDraw ? 1 : -5;
+        let moraleDelta = isWin ? 6 : isDraw ? 1 : -5;
+        if (coachProfile?.background === 'ex_player') {
+          moraleDelta = isWin ? 8 : isDraw ? 2 : -3;
+        }
         Object.entries(drops).forEach(([idStr, drop]) => {
           const id = Number(idStr);
           const cur = next[id] ?? {
@@ -1193,7 +1202,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         return next;
       });
     },
-    [selectedTeam, currentDateStr, pushNews, facilities.medicalCenter, myStaff],
+    [selectedTeam, currentDateStr, pushNews, facilities.medicalCenter, myStaff, coachProfile],
   );
 
   // ── AUTO SUGESTÃO DO DIA ──────────────────────────────────────────────────
@@ -1311,7 +1320,11 @@ export function GameProvider({ children }: { children: ReactNode }) {
       const allPlayers = allTeams.flatMap(t => t.players);
       const player = allPlayers.find((p) => p.id === playerId);
       if (!player) return;
-      const accepted = Math.random() < (salary >= player.salary ? 0.85 : 0.3);
+      let acceptChance = (salary >= player.salary ? 0.85 : 0.3);
+      if (coachProfile?.background === 'negotiator') {
+        acceptChance = (salary >= player.salary * 0.9 ? 0.92 : 0.5);
+      }
+      const accepted = Math.random() < acceptChance;
       setTimeout(() => {
         setPendingContracts((prev) =>
           prev.map((c) =>
@@ -1350,7 +1363,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         });
       }, 800);
     },
-    [selectedTeam, pendingTransfers, currentDateStr, pushNews],
+    [selectedTeam, pendingTransfers, currentDateStr, pushNews, coachProfile],
   );
 
   const resolveContract = useCallback((playerId: number, _: boolean) => {
@@ -1599,16 +1612,51 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const oppFat: Record<number, number> = {};
     oppTeam.players.forEach((p) => (oppFat[p.id] = 100));
 
-    const r1 = Math.random();
-    const aiOpp = { ...defaultTactics };
-    aiOpp.mentality =
-      r1 < 0.3 ? "defensive" : r1 < 0.7 ? "balanced" : "attacking";
+    const aiOpp = getAITacticsForTeam(oppTeam);
+
+    let boostedSelectedTeam = selectedTeam;
+    if (coachProfile?.tacticalStyle) {
+      boostedSelectedTeam = {
+        ...selectedTeam,
+        players: selectedTeam.players.map(p => {
+          let shooting = p.shooting;
+          let passing = p.passing;
+          let dribbling = p.dribbling;
+          let defense = p.defense;
+          let physical = p.physical;
+          let pace = p.pace;
+          
+          if (coachProfile.tacticalStyle === 'tiki_taka') {
+            passing = Math.min(99, passing + 4);
+            dribbling = Math.min(99, dribbling + 4);
+          } else if (coachProfile.tacticalStyle === 'gegenpressing') {
+            pace = Math.min(99, pace + 4);
+            physical = Math.min(99, physical + 4);
+          } else if (coachProfile.tacticalStyle === 'park_the_bus') {
+            defense = Math.min(99, defense + 4);
+          } else if (coachProfile.tacticalStyle === 'offensive') {
+            shooting = Math.min(99, shooting + 4);
+            pace = Math.min(99, pace + 4);
+          }
+          
+          return {
+            ...p,
+            shooting,
+            passing,
+            dribbling,
+            defense,
+            physical,
+            pace
+          };
+        })
+      };
+    }
 
     let res;
     if (tMatch.homeId === selectedTeam.id) {
-      res = simulateMatch(selectedTeam, oppTeam, myFat, oppFat, tactics, aiOpp);
+      res = simulateMatch(boostedSelectedTeam, oppTeam, myFat, oppFat, tactics, aiOpp);
     } else {
-      res = simulateMatch(oppTeam, selectedTeam, oppFat, myFat, aiOpp, tactics);
+      res = simulateMatch(oppTeam, boostedSelectedTeam, oppFat, myFat, aiOpp, tactics);
     }
 
     const { homeGoals, awayGoals, fatigueDrops, stats } = res;
@@ -1673,6 +1721,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     applyFatigueDrops,
     recordLeagueResult,
     pushNews,
+    coachProfile,
   ]);
 
   const simRefs = useRef({
@@ -1781,6 +1830,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       uclStandings,
       uclStage,
       userInUCL,
+      coachProfile,
     };
   }, [
     selectedTeam,
@@ -1803,11 +1853,25 @@ export function GameProvider({ children }: { children: ReactNode }) {
     uclFixtures,
     uclStandings,
     uclStage,
-    userInUCL
+    userInUCL,
+    coachProfile
   ]);
 
   const restoreFromSave = useCallback((team: Team, data: any) => {
     setSelectedTeamRaw(team);
+    if (data.coachProfile) {
+      setCoachProfile(data.coachProfile);
+    } else {
+      const staticInfo = getTeamStaticInfo(team);
+      setCoachProfile({
+        name: staticInfo.coachName || "Treinador Customizado",
+        nationality: "Brasil",
+        age: 45,
+        tacticalStyle: "offensive",
+        favoriteFormation: staticInfo.formation || "4-3-3",
+        background: "pro_license"
+      });
+    }
     setBalance(data.balance ?? team.balance);
     setMonthlyIncome(data.monthlyIncome ?? team.monthlyIncome);
     if (data.myStaff) setMyStaff(data.myStaff);
@@ -1965,6 +2029,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
       value={{
         selectedTeam,
         setSelectedTeam,
+        coachProfile,
+        setCoachProfile,
         playerStates,
         playerStats,
         playerHistory,
@@ -2012,6 +2078,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         completeInteractiveTransfer,
         season,
         seasonFinished,
+        clubTrophies,
         advanceSeason,
         restoreFromSave,
         buildSaveData,

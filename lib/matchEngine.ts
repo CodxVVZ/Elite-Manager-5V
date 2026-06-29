@@ -1,4 +1,6 @@
 import type { Team, Player } from "./teams";
+import { getPositionDistance } from "./positionUtils";
+import { getEffectiveOvr } from "./positionPenalty";
 
 // ─── TÁTICAS ─────────────────────────────────────────────────────────────────
 
@@ -35,6 +37,114 @@ export const defaultTactics: TacticalSettings = {
   formationName: "4-4-2",
   lineup: [],
 };
+
+export const FORMATIONS: Record<string, string[]> = {
+  "4-4-2": ["GK", "LB", "CB", "CB", "RB", "LM", "CM", "CM", "RM", "ST", "ST"],
+  "4-3-3": ["GK", "LB", "CB", "CB", "RB", "CM", "CM", "CM", "LW", "ST", "RW"],
+  "4-2-3-1": ["GK", "LB", "CB", "CB", "RB", "CDM", "CDM", "LM", "CAM", "RM", "ST"],
+  "3-5-2": ["GK", "CB", "CB", "CB", "LM", "CM", "CM", "CM", "RM", "ST", "ST"],
+  "5-3-2": ["GK", "LB", "CB", "CB", "CB", "RB", "CM", "CM", "CM", "ST", "ST"],
+  "4-5-1": ["GK", "LB", "CB", "CB", "RB", "LM", "CM", "CDM", "CM", "RM", "ST"],
+  "4-1-4-1": ["GK", "LB", "CB", "CB", "RB", "CDM", "LM", "CM", "CM", "RM", "ST"],
+  "4-3-3-F": ["GK", "LB", "CB", "CB", "RB", "CDM", "CM", "CM", "LW", "ST", "RW"],
+  "3-4-3": ["GK", "CB", "CB", "CB", "LM", "CM", "CM", "RM", "LW", "ST", "RW"],
+  "4-4-2-D": ["GK", "LB", "CB", "CB", "RB", "LM", "CDM", "CDM", "RM", "ST", "ST"],
+  "5-4-1": ["GK", "LB", "CB", "CB", "CB", "RB", "LM", "CM", "CM", "RM", "ST"],
+  "4-2-2-2": ["GK", "LB", "CB", "CB", "RB", "CDM", "CDM", "CAM", "CAM", "ST", "ST"]
+};
+
+const COACH_FIRST_NAMES = ["Abel", "Jorge", "Pep", "Carlo", "Renato", "Vanderlei", "Dorival", "Fernando", "Mano", "Luis", "Rogério", "Claudio", "Mauricio", "Zinedine", "Antonio", "Marcelo", "Alexandre", "Roberto", "Cuca", "Guto"];
+const COACH_LAST_NAMES = ["Ferreira", "Jesus", "Guardiola", "Ancelotti", "Gaúcho", "Luxemburgo", "Junior", "Diniz", "Menezes", "Castro", "Ceni", "Ranieri", "Pochettino", "Zidane", "Conte", "Bielsa", "Pato", "Oliveira", "Gallo", "Baptista"];
+
+export function getAICoachName(teamId: number): string {
+  const seed = teamId * 54321;
+  const firstIdx = Math.floor(Math.abs(Math.sin(seed)) * COACH_FIRST_NAMES.length);
+  const lastIdx = Math.floor(Math.abs(Math.cos(seed)) * COACH_LAST_NAMES.length);
+  return `${COACH_FIRST_NAMES[firstIdx]} ${COACH_LAST_NAMES[lastIdx]}`;
+}
+
+export function getAITacticsForTeam(team: Team): TacticalSettings {
+  const seed = team.id * 12345;
+  const formations = Object.keys(FORMATIONS);
+  
+  // Deterministic but random-looking selection based on team.id seed
+  const formationIdx = Math.floor(Math.abs(Math.sin(seed)) * formations.length);
+  const favFormation = formations[formationIdx];
+
+  const mentalities: ("defensive" | "balanced" | "attacking")[] = ["defensive", "balanced", "attacking"];
+  const mentalityIdx = Math.floor(Math.abs(Math.cos(seed)) * mentalities.length);
+  const favMentality = mentalities[mentalityIdx];
+
+  const playStyles: ("direct" | "balanced" | "possession")[] = ["direct", "balanced", "possession"];
+  const playStyleIdx = Math.floor(Math.abs(Math.sin(seed + 1)) * playStyles.length);
+  const favPlayStyle = playStyles[playStyleIdx];
+
+  return {
+    mentality: favMentality,
+    defensiveLine: Math.sin(seed + 2) > 0 ? "medium" : Math.sin(seed + 2) > 0.5 ? "high" : "deep",
+    pressingIntensity: Math.cos(seed + 3) > 0 ? "medium" : Math.cos(seed + 3) > 0.5 ? "high" : "low",
+    playStyle: favPlayStyle,
+    counterAttack: Math.sin(seed + 4) > 0,
+    offensiveWidth: "balanced",
+    fullbackSupport: true,
+    compactDefense: true,
+    formationName: favFormation,
+    lineup: []
+  };
+}
+
+export function getBest11WithPositions(team: Team, formationName: string): { player: Player, position: string }[] {
+  const positionsToFill = FORMATIONS[formationName] || FORMATIONS["4-4-2"];
+  const availablePlayers = [...team.players];
+  const assignedPlayers: { player: Player; targetPos: string }[] = [];
+
+  // Sort slots by priority to fill critical/restrictive positions first
+  const posPriority = ["GK", "ST", "CB", "LW", "RW", "CAM", "CDM", "LM", "RM", "LB", "RB", "CM"];
+  const sortedSlots = [...positionsToFill].sort((a, b) => {
+    return posPriority.indexOf(a) - posPriority.indexOf(b);
+  });
+
+  for (const pos of sortedSlots) {
+    if (availablePlayers.length === 0) break;
+    
+    let bestIdx = 0;
+    let maxEffectiveOvr = -999;
+    
+    for (let i = 0; i < availablePlayers.length; i++) {
+      const effOvr = getEffectiveOvr(availablePlayers[i], pos);
+      if (effOvr > maxEffectiveOvr) {
+        maxEffectiveOvr = effOvr;
+        bestIdx = i;
+      }
+    }
+    
+    const chosenPlayer = availablePlayers[bestIdx];
+    assignedPlayers.push({ player: chosenPlayer, targetPos: pos });
+    availablePlayers.splice(bestIdx, 1);
+  }
+
+  // Map back to the original slots order
+  const finalLineup: { player: Player; position: string }[] = [];
+  const assignedSet = new Set<number>();
+  
+  for (const pos of positionsToFill) {
+    const match = assignedPlayers.find(ap => ap.targetPos === pos && !assignedSet.has(ap.player.id));
+    if (match) {
+      finalLineup.push({ player: match.player, position: pos });
+      assignedSet.add(match.player.id);
+    }
+  }
+  
+  // Just in case any slots are empty
+  for (const ap of assignedPlayers) {
+    if (!assignedSet.has(ap.player.id) && finalLineup.length < 11) {
+      finalLineup.push({ player: ap.player, position: ap.targetPos });
+      assignedSet.add(ap.player.id);
+    }
+  }
+
+  return finalLineup;
+}
 
 // ─── TIPOS DE EVENTOS ─────────────────────────────────────────────────────────
 
@@ -103,33 +213,7 @@ function pick<T>(arr: T[]): T {
 }
 
 function getBest11(team: Team): Player[] {
-  const available = [...team.players].sort((a, b) => b.overall - a.overall);
-  const best: Player[] = [];
-
-  const pickBest = (isGK: boolean, count: number, preferred: string[]) => {
-    for (let c = 0; c < count; c++) {
-      let idx = available.findIndex((p) =>
-        isGK ? p.position === "GK" : preferred.includes(p.position),
-      );
-      if (idx === -1)
-        idx = available.findIndex((p) =>
-          isGK ? p.position === "GK" : p.position !== "GK",
-        );
-      if (idx === -1) idx = 0;
-      if (available.length > 0 && idx !== -1) {
-        best.push(available[idx]);
-        available.splice(idx, 1);
-      }
-    }
-  };
-
-  // 1 GK, 4 DEF, 4 MID, 2 ATK
-  pickBest(true, 1, ["GK"]);
-  pickBest(false, 4, ["CB", "LB", "RB"]);
-  pickBest(false, 4, ["CDM", "CM", "CAM", "LM", "RM"]);
-  pickBest(false, 2, ["ST", "LW", "RW"]);
-
-  return best;
+  return getBest11WithPositions(team, "4-4-2").map(item => item.player);
 }
 
 function getLineupPlayers(team: Team, tactics: TacticalSettings): Player[] {
@@ -141,7 +225,9 @@ function getLineupPlayers(team: Team, tactics: TacticalSettings): Player[] {
   }
   
   if (play11.length < 11) {
-    const best = getBest11(team);
+    const formationName = tactics.formationName || "4-4-2";
+    const bestWithPositions = getBest11WithPositions(team, formationName);
+    const best = bestWithPositions.map(item => item.player);
     const existingIds = new Set(play11.map(p => p.id));
     for (const p of best) {
       if (play11.length >= 11) break;
@@ -176,9 +262,6 @@ function getGK(team: Team, tactics: TacticalSettings): Player {
 
 // ─── FORÇA DO TIME ────────────────────────────────────────────────────────────
 
-import { getPositionDistance } from "./positionUtils";
-import { getEffectiveOvr } from "./positionPenalty";
-
 function calcStrength(
   team: Team,
   fatigueMap: Record<number, number>,
@@ -205,17 +288,27 @@ function calcStrength(
       avgFatigue = totalFatigue / count;
     }
   } else {
-    // If no lineup (e.g. AI), use best11 which puts players mostly in right positions
-    const play11 = getLineupPlayers(team, tactics);
-    avgOvr =
-      play11.length > 0
-        ? play11.reduce((s, p) => s + p.overall, 0) / play11.length
-        : 50;
-    avgFatigue =
-      play11.length > 0
-        ? play11.reduce((s, p) => s + (fatigueMap[p.id] ?? 100), 0) /
-          play11.length
-        : 100;
+    // If no lineup (e.g. AI), use getBest11WithPositions to evaluate effective OVR with position penalty
+    const formationName = tactics.formationName || "4-4-2";
+    const lineupWithPositions = getBest11WithPositions(team, formationName);
+    
+    let totalOvr = 0;
+    let totalFatigue = 0;
+    let count = 0;
+    
+    lineupWithPositions.forEach(({ player, position }) => {
+      totalOvr += getEffectiveOvr(player, position);
+      totalFatigue += fatigueMap[player.id] ?? 100;
+      count++;
+    });
+    
+    if (count > 0) {
+      avgOvr = totalOvr / count;
+      avgFatigue = totalFatigue / count;
+    } else {
+      avgOvr = 50;
+      avgFatigue = 100;
+    }
   }
 
   // Penalidade de fadiga: -1 ponto por cada 10% abaixo de 100
